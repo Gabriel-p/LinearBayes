@@ -1,15 +1,73 @@
 
 import sys
+from astropy.io import ascii
 import numpy as np
 from scipy.optimize import differential_evolution as DE
 import emcee
+import matplotlib.pyplot as plt
 import warnings
+
+
+def main():
+    """
+    """
+
+    file_name = "rgb6.poor.txt"
+    xy_cols = "RA(deg)", "Dec(deg)"
+
+    # Read data
+    x, ex, y, ey = readData(file_name, xy_cols)
+    # x, ex, y, ey = synthData()
+
+    xy_data = np.array([x, y, ex, ey]).T
+
+    # Some priors: slope, intercept, intrinsic scatter, outlier mean,
+    # outlier scatter (standard deviation of outliers), outlier fraction
+    priors = [0, 400, -400., 0., 0.001, 100., -10., 10., 0.001, 1000.]
+    # priors = [-10., 10., -10., 10., 0.001, 100., -10., 10., 0.001, 1000.]
+
+    # Make the fit
+    samples, point_estim = fit_data(xy_data, priors)
+
+    makePlots(x, ex, y, ey, samples, point_estim)
+
+
+def readData(file_name, xy_cols):
+    """
+    """
+
+    data = ascii.read(file_name)
+    x, y = data[xy_cols[0]], data[xy_cols[1]]
+    N = len(x)
+
+    ex, ey = np.zeros(N), np.zeros(N)
+
+    return x, ex, y, ey
+
+
+def synthData():
+    """
+    """
+    m, b = np.random.uniform(-10., 10., 2)
+    print("True values: m={:.3f}, b={:.3f}".format(m, b))
+
+    # Generate some synthetic data from the model.
+    N = np.random.randint(10, 500)
+    x = np.sort(10 * np.random.rand(N))
+    ex = 0.1 + 0.5 * np.random.rand(N)
+
+    y = m * x + b
+    ey = 0.2 * (y.max() - y.min()) * np.random.rand(N)
+    y += ey * np.random.randn(N)
+    ey = ey * .5
+
+    return x, ex, y, ey
 
 
 def fit_data(
     data,
         priorlimits=[-10., 10., -10., 10., 0.001, 100., -10., 10., 0.001,
-                     1000.], nwalkers=20, nsteps=5000, nburn=1000):
+                     1000.], nwalkers=20, nsteps=5000, burn_frac=.25):
     """
     This code will fit a straight line with intrinsic dispersion to data with
     (optionally) covariant errors on both the independent and dependent
@@ -55,8 +113,8 @@ def fit_data(
     nsteps : int
         The number of steps each walker should take in the MCMC.
 
-    nburn : int
-        The number of initial emcee walkers to discard as burn-in.
+    burn_frac : 0 < float < 1
+        The fraction of initial emcee walkers to discard as burn-in.
 
     Returns
     -------
@@ -104,7 +162,7 @@ def fit_data(
     # Sample ball around the max posterior point.
     p0 = emcee.utils.sample_ball(
         pstart, 0.01 * np.ones_like(pstart), size=nwalkers)
-    # Make sure no negative outlier fractions
+    # Make sure there are no negative outlier fractions
     p0[:, -1] = np.abs(p0[:, -1])
 
     print("Running emcee...")
@@ -114,6 +172,7 @@ def fit_data(
         updt(nsteps, i)
 
     # Remove burn-in and flatten all chains.
+    nburn = int(burn_frac * nsteps)
     samples = sampler.chain[:, nburn:, :].reshape((-1, ndim))
 
     # Shape: (6, 3)
@@ -271,44 +330,49 @@ def updt(total, progress, extra=""):
     sys.stdout.flush()
 
 
-def testRun():
+def makePlots(x, ex, y, ey, samples, point_estim, m=None, b=None):
+    """
+    """
+    try:
+        import corner
+        fig = plt.figure(figsize=(10, 10))
+        corner.corner(samples)
+        fig.tight_layout()
+        plt.savefig("corner.png", dpi=150)
+    except ModuleNotFoundError:
+        print("No corner module")
 
-    m, b = np.random.uniform(-10., 10., 2)
-    print("True values: m={:.3f}, b={:.3f}".format(m, b))
+    fig = plt.figure(figsize=(10, 10))
+    ax = plt.subplot(111)
+    ax.minorticks_on()
+    ax.grid(b=True, which='both', color='gray', linestyle='--', lw=.5)
 
-    # Generate some synthetic data from the model.
-    N = np.random.randint(10, 500)
-    x = np.sort(10 * np.random.rand(N))
-    ex = 0.1 + 0.5 * np.random.rand(N)
-    y = m * x + b
-    ey = 0.2 * (y.max() - y.min()) * np.random.rand(N)
-    y += ey * np.random.randn(N)
-    ey = ey * .5
-
-    fake_data = np.array([x, y, ex, ey]).T
-    samples, point_estim = fit_data(fake_data)
+    if m is not None:
+        txt = r"$True:\;m={:.3f},\,b={:.3f}$".format(m, b)
+    else:
+        txt = ''
+    plt.errorbar(x, y, xerr=ex, yerr=ey, fmt='o', label=txt)
+    xmin, xmax = ax.get_xlim()
+    ymin, ymax = ax.get_ylim()
 
     mlo, mmed, mhi = point_estim[0]
-    mlo, mhi = mmed - mlo, mhi - mmed
+    # mlo, mhi = mmed - mlo, mhi - mmed
     blo, bmed, bhi = point_estim[1]
-    blo, bhi = bmed - blo, bhi - bmed
-    txt = r"$Estim:\;m={:.3f}_{{-{:.3f}}}^{{+{:.3f}}}$".format(mmed, mlo, mhi)
-    txt += r"$,\;b={:.3f}_{{-{:.3f}}}^{{+{:.3f}}}$".format(bmed, blo, bhi)
+    # blo, bhi = bmed - blo, bhi - bmed
+    txt = r"$Estim:\;m={:.3f}_{{{:.3f}}}^{{{:.3f}}}$".format(mmed, mlo, mhi)
+    txt += r"$,\;b={:.3f}_{{{:.3f}}}^{{{:.3f}}}$".format(bmed, blo, bhi)
     print('\n' + txt)
 
-    import matplotlib.pyplot as plt
-    import corner
+    x0 = np.linspace(min(x), max(x), 10)
+    plt.plot(x0, np.poly1d((mmed, bmed))(x0), label=txt, zorder=4)
 
-    corner.corner(samples)
-    plt.show()
+    plt.xlim(xmin, xmax)
+    plt.ylim(ymin, ymax)
 
-    plt.errorbar(
-        x, y, xerr=ex, yerr=ey, fmt='o',
-        label=r"$True:\;m={:.3f},\,b={:.3f}$".format(m, b))
-    plt.plot(x, np.poly1d((m, b))(x), label=txt, zorder=4)
     plt.legend()
-    plt.show()
+    fig.tight_layout()
+    plt.savefig("final_fit.png", dpi=150)
 
 
 if __name__ == '__main__':
-    testRun()
+    main()
